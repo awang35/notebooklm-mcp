@@ -97,7 +97,7 @@ docs = [
 # UV Configuration
 [tool.uv]
 # Development workflow configuration
-dev-dependencies = []  # Use dependency-groups instead
+# Using modern dependency-groups instead of deprecated dev-dependencies
 
 # Package configuration
 package = true

@@ -258,13 +258,13 @@ def server(
             f"Working Directory: {working_dir}\n"
             f"Profile: {config.auth.profile_dir}\n"
             f"Debug: {config.debug}",
-            title="🚀 FastMCP Server Starting",
+            title="FastMCP Server Starting",
         )
     )
 
     # Change to working directory
     os.chdir(working_dir)
-    console.print(f"[dim]📁 Set working directory to: {working_dir}[/dim]")
+    console.print(f"[dim]Set working directory to: {working_dir}[/dim]")
 
     try:
         # Use FastMCP v2 implementation only
@@ -272,11 +272,11 @@ def server(
 
         if transport == "http":
             console.print(
-                f"[green]🌐 FastMCP HTTP server will be available at: http://{host}:{port}/mcp/[/green]"
+                f"[green]FastMCP HTTP server will be available at: http://{host}:{port}/mcp/[/green]"
             )
         elif transport == "sse":
             console.print(
-                f"[green]🌐 FastMCP SSE server will be available at: http://{host}:{port}/[/green]"
+                f"[green]FastMCP SSE server will be available at: http://{host}:{port}/[/green]"
             )
 
         asyncio.run(server.start(transport=transport, host=host, port=port))
@@ -290,14 +290,14 @@ def server(
         if "Authentication required" in str(e):
             console.print(
                 Panel.fit(
-                    "[yellow]🔐 Authentication Required[/yellow]\n\n"
+                    "[yellow]Authentication Required[/yellow]\n\n"
                     "The server needs manual authentication to access NotebookLM.\n\n"
                     "[bold]To fix this:[/bold]\n"
                     "1. Run without --headless flag for manual login:\n"
                     f"   [cyan]notebooklm-mcp --config {ctx.obj.get('config_file', 'notebooklm-config.json')} server[/cyan]\n\n"
                     "2. Complete Google login in the browser\n"
                     "3. Then retry with --headless flag for production use",
-                    title="🔑 Authentication Help",
+                    title="Authentication Help",
                 )
             )
 

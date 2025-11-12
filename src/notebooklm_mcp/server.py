@@ -71,12 +71,13 @@ class NotebookLMFastMCP:
         )
 
     async def _ensure_client(self) -> None:
-        """Ensure NotebookLM client is initialized and authenticated"""
+        """Ensure NotebookLM client is initialized (lazy initialization)"""
         try:
             if self.client is None:
+                logger.info("First tool call - initializing browser...")
                 self.client = NotebookLMClient(self.config)
                 await self.client.start()
-                logger.info("✅ NotebookLM client initialized and authenticated")
+                logger.info("NotebookLM client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}")
             raise NotebookLMError(f"Client initialization failed: {e}")
@@ -86,20 +87,21 @@ class NotebookLMFastMCP:
 
         @self.app.tool()
         async def healthcheck() -> Dict[str, Any]:
-            """Check if the NotebookLM server is healthy and responsive."""
+            """Check if the NotebookLM server is healthy and responsive.
+
+            This will initialize the browser on first call if not already initialized.
+            """
             try:
+                # Initialize client if not already done (lazy initialization)
                 if not self.client:
-                    return {
-                        "status": "unhealthy",
-                        "message": "Client not initialized",
-                        "authenticated": False,
-                    }
+                    logger.info("Healthcheck triggered - initializing browser...")
+                    await self._ensure_client()
 
                 auth_status = getattr(self.client, "_is_authenticated", False)
 
                 return {
                     "status": "healthy" if auth_status else "needs_auth",
-                    "message": "Server is running",
+                    "message": "Server is running and client initialized",
                     "authenticated": auth_status,
                     "notebook_id": self.config.default_notebook_id,
                     "mode": "headless" if self.config.headless else "gui",
@@ -114,20 +116,27 @@ class NotebookLMFastMCP:
                 }
 
         @self.app.tool()
-        async def send_chat_message(request: SendMessageRequest) -> Dict[str, Any]:
-            """Send a message to NotebookLM chat interface."""
+        async def send_chat_message(
+            message: str, wait_for_response: bool = True
+        ) -> Dict[str, Any]:
+            """Send a message to NotebookLM chat interface.
+
+            Args:
+                message: The message to send to NotebookLM
+                wait_for_response: Whether to wait for response after sending
+            """
             try:
                 await self._ensure_client()
-                await self.client.send_message(request.message)
+                await self.client.send_message(message)
 
-                response_data = {"status": "sent", "message": request.message}
+                response_data = {"status": "sent", "message": message}
 
-                if request.wait_for_response:
+                if wait_for_response:
                     response = await self.client.get_response()
                     response_data["response"] = response
                     response_data["status"] = "completed"
 
-                logger.info(f"Message sent successfully: {request.message[:50]}...")
+                logger.info(f"Message sent successfully: {message[:50]}...")
                 return response_data
 
             except Exception as e:
@@ -135,8 +144,12 @@ class NotebookLMFastMCP:
                 raise NotebookLMError(f"Failed to send message: {e}")
 
         @self.app.tool()
-        async def get_chat_response(request: GetResponseRequest) -> Dict[str, Any]:
-            """Get the latest response from NotebookLM with streaming support."""
+        async def get_chat_response(timeout: int = 30) -> Dict[str, Any]:
+            """Get the latest response from NotebookLM with streaming support.
+
+            Args:
+                timeout: Timeout in seconds for waiting for response
+            """
             try:
                 await self._ensure_client()
                 response = await self.client.get_response()
@@ -170,26 +183,32 @@ class NotebookLMFastMCP:
                 raise NotebookLMError(f"Failed to get quick response: {e}")
 
         @self.app.tool()
-        async def chat_with_notebook(request: ChatRequest) -> Dict[str, Any]:
-            """Complete chat interaction: send message and get response."""
+        async def chat_with_notebook(
+            message: str, notebook_id: Optional[str] = None
+        ) -> Dict[str, Any]:
+            """Complete chat interaction: send message and get response.
+
+            Args:
+                message: The message to send
+                notebook_id: Optional notebook ID to switch to
+            """
             try:
                 await self._ensure_client()
 
                 # Switch notebook if specified
-                if request.notebook_id:
-                    await self.client.navigate_to_notebook(request.notebook_id)
+                if notebook_id:
+                    await self.client.navigate_to_notebook(notebook_id)
 
                 # Send message and get response
-                await self.client.send_message(request.message)
+                await self.client.send_message(message)
                 response = await self.client.get_response()
 
-                logger.info(f"Chat completed: {request.message[:50]}...")
+                logger.info(f"Chat completed: {message[:50]}...")
                 return {
                     "status": "success",
-                    "message": request.message,
+                    "message": message,
                     "response": response,
-                    "notebook_id": request.notebook_id
-                    or self.config.default_notebook_id,
+                    "notebook_id": notebook_id or self.config.default_notebook_id,
                 }
 
             except Exception as e:
@@ -197,17 +216,21 @@ class NotebookLMFastMCP:
                 raise NotebookLMError(f"Chat interaction failed: {e}")
 
         @self.app.tool()
-        async def navigate_to_notebook(request: NavigateRequest) -> Dict[str, Any]:
-            """Navigate to a specific notebook."""
+        async def navigate_to_notebook(notebook_id: str) -> Dict[str, Any]:
+            """Navigate to a specific notebook.
+
+            Args:
+                notebook_id: The notebook ID to navigate to
+            """
             try:
                 await self._ensure_client()
-                await self.client.navigate_to_notebook(request.notebook_id)
+                await self.client.navigate_to_notebook(notebook_id)
 
-                logger.info(f"Navigated to notebook: {request.notebook_id}")
+                logger.info(f"Navigated to notebook: {notebook_id}")
                 return {
                     "status": "success",
-                    "notebook_id": request.notebook_id,
-                    "message": f"Successfully navigated to notebook {request.notebook_id}",
+                    "notebook_id": notebook_id,
+                    "message": f"Successfully navigated to notebook {notebook_id}",
                 }
 
             except Exception as e:
@@ -224,20 +247,24 @@ class NotebookLMFastMCP:
             }
 
         @self.app.tool()
-        async def set_default_notebook(request: SetNotebookRequest) -> Dict[str, Any]:
-            """Set the default notebook ID."""
+        async def set_default_notebook(notebook_id: str) -> Dict[str, Any]:
+            """Set the default notebook ID.
+
+            Args:
+                notebook_id: The notebook ID to set as default
+            """
             try:
                 old_notebook = self.config.default_notebook_id
-                self.config.default_notebook_id = request.notebook_id
+                self.config.default_notebook_id = notebook_id
 
                 logger.info(
-                    f"Default notebook changed: {old_notebook} → {request.notebook_id}"
+                    f"Default notebook changed: {old_notebook} → {notebook_id}"
                 )
                 return {
                     "status": "success",
                     "old_notebook_id": old_notebook,
-                    "new_notebook_id": request.notebook_id,
-                    "message": f"Default notebook set to {request.notebook_id}",
+                    "new_notebook_id": notebook_id,
+                    "message": f"Default notebook set to {notebook_id}",
                 }
 
             except Exception as e:
@@ -249,18 +276,18 @@ class NotebookLMFastMCP:
     ):
         """Start the FastMCP v2 server with specified transport"""
         try:
-            # Initialize client
-            await self._ensure_client()
+            # Client initialization is deferred until first tool call for faster startup
+            logger.info("MCP server starting - browser will initialize on first tool use")
 
             # Run the FastMCP server with specified transport
             if transport == "http":
-                logger.info(f"🌐 Starting HTTP server on http://{host}:{port}/mcp/")
+                logger.info(f"Starting HTTP server on http://{host}:{port}/mcp/")
                 await self.app.run_async(transport="http", host=host, port=port)
             elif transport == "sse":
-                logger.info(f"🌐 Starting SSE server on http://{host}:{port}/")
+                logger.info(f"Starting SSE server on http://{host}:{port}/")
                 await self.app.run_async(transport="sse", host=host, port=port)
             else:
-                logger.info("📡 Starting STDIO server...")
+                logger.info("Starting STDIO server...")
                 await self.app.run_async(transport="stdio")
 
         except Exception as e:
@@ -272,7 +299,7 @@ class NotebookLMFastMCP:
         try:
             if self.client:
                 await self.client.close()
-                logger.info("✅ FastMCP server stopped gracefully")
+                logger.info("FastMCP server stopped gracefully")
         except Exception as e:
             logger.error(f"Error during server shutdown: {e}")
 

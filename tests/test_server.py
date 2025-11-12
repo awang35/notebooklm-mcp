@@ -130,8 +130,9 @@ async def test_start_handles_errors(monkeypatch):
     monkeypatch.setattr(server_module, "NotebookLMClient", ExplodingClient)
     server = server_module.NotebookLMFastMCP(ServerConfig(default_notebook_id="abc"))
 
-    with pytest.raises(NotebookLMError, match="Server startup failed"):
-        await server.start()
+    # With lazy initialization, errors occur during _ensure_client, not during server.start()
+    with pytest.raises(NotebookLMError, match="Client initialization failed"):
+        await server._ensure_client()
 
 
 @pytest.mark.asyncio
@@ -149,13 +150,10 @@ async def test_healthcheck_tool_reports_status(monkeypatch):
     monkeypatch.setattr(server_module, "NotebookLMClient", DummyClient)
     server = server_module.NotebookLMFastMCP(ServerConfig(default_notebook_id="abc"))
 
+    # Healthcheck now initializes the client on first call
     result = await server.app.tools["healthcheck"]()
-    assert result["status"] == "unhealthy"
-
-    dummy = DummyClient(server.config)
-    server.client = dummy
-    result = await server.app.tools["healthcheck"]()
-    assert result["status"] == "healthy"
+    assert result["status"] == "healthy"  # Client was initialized by healthcheck
+    assert server.client is not None  # Client was created
 
 
 @pytest.mark.asyncio
@@ -169,8 +167,9 @@ async def test_send_chat_message_tool(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.SendMessageRequest(message="hi", wait_for_response=True)
-    response = await server.app.tools["send_chat_message"](request)
+    response = await server.app.tools["send_chat_message"](
+        message="hi", wait_for_response=True
+    )
 
     assert dummy.sent_messages == ["hi"]
     assert response["status"] == "completed"
@@ -187,8 +186,9 @@ async def test_send_chat_message_tool_no_wait(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.SendMessageRequest(message="hi", wait_for_response=False)
-    response = await server.app.tools["send_chat_message"](request)
+    response = await server.app.tools["send_chat_message"](
+        message="hi", wait_for_response=False
+    )
 
     assert response["status"] == "sent"
     assert "response" not in response
@@ -208,10 +208,11 @@ async def test_send_chat_message_tool_error(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.SendMessageRequest(message="hi", wait_for_response=False)
 
     with pytest.raises(NotebookLMError):
-        await server.app.tools["send_chat_message"](request)
+        await server.app.tools["send_chat_message"](
+            message="hi", wait_for_response=False
+        )
 
 
 @pytest.mark.asyncio
@@ -225,8 +226,9 @@ async def test_chat_with_notebook_tool(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.ChatRequest(message="hello", notebook_id="xyz")
-    response = await server.app.tools["chat_with_notebook"](request)
+    response = await server.app.tools["chat_with_notebook"](
+        message="hello", notebook_id="xyz"
+    )
 
     assert dummy.sent_messages == ["hello"]
     assert dummy.navigated_to == ["xyz"]
@@ -244,9 +246,8 @@ async def test_get_chat_response_and_quick_response(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.GetResponseRequest(timeout=1)
 
-    chat_result = await server.app.tools["get_chat_response"](request)
+    chat_result = await server.app.tools["get_chat_response"](timeout=1)
     quick_result = await server.app.tools["get_quick_response"]()
 
     assert chat_result["response"] == "response"
@@ -267,10 +268,9 @@ async def test_get_chat_response_error(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.GetResponseRequest(timeout=1)
 
     with pytest.raises(NotebookLMError):
-        await server.app.tools["get_chat_response"](request)
+        await server.app.tools["get_chat_response"](timeout=1)
 
 
 @pytest.mark.asyncio
@@ -307,8 +307,7 @@ async def test_get_and_set_default_notebook_tools(monkeypatch):
     get_result = await server.app.tools["get_default_notebook"]()
     assert get_result["notebook_id"] == "abc"
 
-    request = server_module.SetNotebookRequest(notebook_id="new-id")
-    set_result = await server.app.tools["set_default_notebook"](request)
+    set_result = await server.app.tools["set_default_notebook"](notebook_id="new-id")
     assert set_result["new_notebook_id"] == "new-id"
     assert server.config.default_notebook_id == "new-id"
 
@@ -327,10 +326,9 @@ async def test_navigate_to_notebook_tool_error(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.NavigateRequest(notebook_id="xyz")
 
     with pytest.raises(NotebookLMError):
-        await server.app.tools["navigate_to_notebook"](request)
+        await server.app.tools["navigate_to_notebook"](notebook_id="xyz")
 
 
 @pytest.mark.asyncio
@@ -391,8 +389,7 @@ async def test_navigate_to_notebook_tool_success(monkeypatch):
         return None
 
     server._ensure_client = MethodType(fake_ensure, server)
-    request = server_module.NavigateRequest(notebook_id="xyz")
-    result = await server.app.tools["navigate_to_notebook"](request)
+    result = await server.app.tools["navigate_to_notebook"](notebook_id="xyz")
 
     assert result["status"] == "success"
     assert dummy.navigated_to == ["xyz"]
@@ -410,10 +407,9 @@ async def test_set_default_notebook_error(monkeypatch):
             super().__setattr__(name, value)
 
     server.config = ExplodingConfig(default_notebook_id="abc")
-    request = server_module.SetNotebookRequest(notebook_id="boom")
 
     with pytest.raises(NotebookLMError):
-        await server.app.tools["set_default_notebook"](request)
+        await server.app.tools["set_default_notebook"](notebook_id="boom")
 
 
 @pytest.mark.asyncio

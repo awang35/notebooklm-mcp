@@ -15,7 +15,6 @@ from .exceptions import ConfigurationError
 class AuthConfig:
     """Authentication configuration"""
 
-    cookies_path: Optional[str] = None
     profile_dir: str = "./chrome_profile_notebooklm"
     use_persistent_session: bool = True
     auto_login: bool = True
@@ -79,7 +78,6 @@ class ServerConfig:
             debug=os.getenv("NOTEBOOKLM_DEBUG", "false").lower() == "true",
             default_notebook_id=os.getenv("NOTEBOOKLM_NOTEBOOK_ID"),
             auth=AuthConfig(
-                cookies_path=os.getenv("NOTEBOOKLM_COOKIES_PATH"),
                 profile_dir=os.getenv(
                     "NOTEBOOKLM_PROFILE_DIR", "./chrome_profile_notebooklm"
                 ),

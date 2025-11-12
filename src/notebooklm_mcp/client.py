@@ -40,6 +40,7 @@ class NotebookLMClient:
     async def start(self) -> None:
         """Start browser session"""
         await asyncio.get_event_loop().run_in_executor(None, self._start_browser)
+        # Note: Authentication is deferred until first tool use for faster MCP startup
 
     def _start_browser(self) -> None:
         """Initialize browser with proper configuration"""
@@ -58,10 +59,39 @@ class NotebookLMClient:
             options.add_argument("--no-default-browser-check")
             options.add_argument("--disable-extensions")
 
+            # Additional stability options for Windows
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-software-rasterizer")
+            options.add_argument("--disable-features=VizDisplayCompositor")
+
             if self.config.headless:
                 options.add_argument("--headless=new")
+                options.add_argument("--window-size=1920,1080")
+                options.add_argument("--disable-background-networking")
+                options.add_argument("--disable-background-timer-throttling")
+                options.add_argument("--disable-backgrounding-occluded-windows")
+                options.add_argument("--disable-breakpad")
+                options.add_argument("--disable-component-extensions-with-background-pages")
+                options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees")
+                options.add_argument("--disable-ipc-flooding-protection")
+                options.add_argument("--disable-renderer-backgrounding")
+                options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+                options.add_argument("--force-color-profile=srgb")
+                options.add_argument("--hide-scrollbars")
+                options.add_argument("--metrics-recording-only")
+                options.add_argument("--mute-audio")
+                # Fix for DevToolsActivePort crash on Windows
+                options.add_argument("--remote-debugging-port=9222")
+                options.add_argument("--disable-popup-blocking")
 
-            self.driver = uc.Chrome(options=options, version_main=None)
+            try:
+                self.driver = uc.Chrome(options=options, version_main=None, headless=self.config.headless)
+            except Exception as e:
+                logger.warning(f"Failed to start undetected-chromedriver: {e}")
+                logger.info("Falling back to regular Chrome WebDriver")
+                self._start_regular_chrome()
         else:
             logger.warning(
                 "undetected-chromedriver not available, using regular Selenium"
@@ -77,21 +107,41 @@ class NotebookLMClient:
         """Fallback Chrome initialization"""
         opts = ChromeOptions()
 
-        # Anti-detection options
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
+        # Use profile directory if persistent session is enabled
+        if self.config.auth.use_persistent_session:
+            profile_path = Path(self.config.auth.profile_dir).absolute()
+            profile_path.mkdir(exist_ok=True, parents=True)
+            opts.add_argument(f"--user-data-dir={profile_path}")
+            logger.info(f"Using Chrome profile: {profile_path}")
+
+            # Windows-specific flags to avoid profile lock issues
+            opts.add_argument("--disable-features=RendererCodeIntegrity")
+            opts.add_argument("--disable-site-isolation-trials")
+
+        # Basic options (fewer flags for non-headless to avoid crashes)
+        if not self.config.headless:
+            # Minimal flags for GUI mode
+            opts.add_argument("--no-first-run")
+            opts.add_argument("--no-default-browser-check")
+            opts.add_argument("--disable-infobars")
+        else:
+            # Headless mode needs more flags
+            opts.add_argument("--headless=new")
+            opts.add_argument("--window-size=1920,1080")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--disable-software-rasterizer")
+            opts.add_argument("--disable-background-networking")
+            opts.add_argument("--disable-renderer-backgrounding")
+            opts.add_argument("--remote-debugging-port=9222")
+            opts.add_argument("--disable-extensions")
+            opts.add_argument("--disable-popup-blocking")
+
+        # Anti-detection for all modes
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_experimental_option("excludeSwitches", ["enable-automation"])
         opts.add_experimental_option("useAutomationExtension", False)
-
-        # User agent
-        opts.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-
-        if self.config.headless:
-            opts.add_argument("--headless=new")
 
         self.driver = webdriver.Chrome(options=opts)
 
@@ -99,6 +149,7 @@ class NotebookLMClient:
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
+
 
     async def authenticate(self) -> bool:
         """Authenticate with NotebookLM"""
@@ -127,27 +178,39 @@ class NotebookLMClient:
             )
 
             current_url = self.driver.current_url
-            logger.debug(f"Current URL after navigation: {current_url}")
+            logger.info(f"Current URL after navigation: {current_url}")
 
             # Check if authenticated
             if "signin" not in current_url and "accounts.google.com" not in current_url:
-                logger.info("✅ Already authenticated via persistent session!")
+                logger.info("Already authenticated via persistent session!")
                 self._is_authenticated = True
                 return True
             else:
-                logger.warning("❌ Authentication required - need manual login")
+                logger.warning(f"Authentication required - please log in manually")
+                logger.warning(f"Current URL: {current_url}")
+
                 if not self.config.headless:
                     logger.info("Browser will stay open for manual authentication")
+                    logger.info("Please log in and the session will be saved to the profile")
+
                 self._is_authenticated = False
                 return False
 
         except TimeoutException:
             raise AuthenticationError("Page load timed out during authentication")
 
+
     async def send_message(self, message: str) -> None:
         """Send chat message to NotebookLM"""
-        if not self.driver or not self._is_authenticated:
-            raise ChatError("Not authenticated or browser not ready")
+        if not self.driver:
+            raise ChatError("Browser not ready")
+
+        # Auto-authenticate on first use
+        if not self._is_authenticated:
+            logger.info("First tool use - authenticating now...")
+            auth_success = await self.authenticate()
+            if not auth_success:
+                raise ChatError("Authentication failed - manual login required")
 
         await asyncio.get_event_loop().run_in_executor(
             None, self._send_message_sync, message
@@ -157,6 +220,12 @@ class NotebookLMClient:
         """Synchronous message sending"""
         if self.driver is None:
             raise RuntimeError("Browser driver not initialized")
+
+        # Sanitize message: replace newlines with spaces to prevent multiple entries
+        message = message.replace('\n', ' ').replace('\r', ' ')
+        # Clean up multiple spaces
+        message = ' '.join(message.split())
+        logger.debug(f"Sanitized message: {message[:100]}...")
 
         # Ensure we're on the right notebook
         if self.current_notebook_id:
@@ -239,7 +308,7 @@ class NotebookLMClient:
                 # Check for streaming indicators
                 is_streaming = self._check_streaming_indicators()
                 if not is_streaming and stable_count >= required_stable_count:
-                    logger.info("✅ Response appears complete")
+                    logger.info("Response appears complete")
                     return current_response
             else:
                 stable_count = 0
